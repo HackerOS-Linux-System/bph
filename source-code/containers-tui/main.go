@@ -44,16 +44,16 @@ var (
 	}
 	scenarios = []scenario{
 		{"Scan Local Network", []string{"Check interfaces (bph checklist nmap)", "Run nmap on 192.168.1.0/24", "Parse results (bph parse nmap <output>)", "Ethics: Only on your network!"}},
-		{"Wi-Fi Assessment", []string{"Enable monitor mode (bph checklist aircrack-ng)", "Run airodump-ng", "Analyze captures"}},
+     {"Wi-Fi Assessment", []string{"Enable monitor mode (bph checklist aircrack-ng)", "Run airodump-ng", "Analyze captures"}},
 	}
 	style = lipgloss.NewStyle().
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("240"))
+	BorderStyle(lipgloss.NormalBorder()).
+	BorderForeground(lipgloss.Color("240"))
 	statusStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("205")).
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderBottom(true).
-		BorderForeground(lipgloss.Color("240"))
+	Foreground(lipgloss.Color("205")).
+	BorderStyle(lipgloss.NormalBorder()).
+	BorderBottom(true).
+	BorderForeground(lipgloss.Color("240"))
 )
 
 type model struct {
@@ -73,6 +73,8 @@ type model struct {
 }
 
 type statusTickMsg time.Time
+type progressTickMsg struct{}
+type animationMsg progress.FrameMsg
 
 func initialModel() model {
 	actionItems := []list.Item{
@@ -86,26 +88,21 @@ func initialModel() model {
 	}
 	actionList := list.New(actionItems, list.NewDefaultDelegate(), 0, 0)
 	actionList.Title = "BPH Actions - Select Distro First"
-
 	toolItems := make([]list.Item, len(toolDocs))
 	for i, t := range toolDocs {
 		toolItems[i] = item{title: t.name, desc: t.desc}
 	}
 	toolList := list.New(toolItems, list.NewDefaultDelegate(), 0, 0)
 	toolList.Title = "Select Tool"
-
 	scenarioItems := make([]list.Item, len(scenarios))
 	for i, s := range scenarios {
 		scenarioItems[i] = item{title: s.name, desc: "Guided pentesting lab"}
 	}
 	scenarioList := list.New(scenarioItems, list.NewDefaultDelegate(), 0, 0)
 	scenarioList.Title = "Select Guided Lab"
-
 	vp := viewport.New(0, 0)
 	vp.Style = style
-
 	prog := progress.New(progress.WithDefaultGradient())
-
 	return model{
 		actionList:   actionList,
 		toolList:     toolList,
@@ -118,121 +115,132 @@ func initialModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(statusTickCmd(), m.progress.Animate())
+	return statusTickCmd()
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
-
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			m.quitting = true
-			return m, tea.Quit
-		case "enter":
-			switch m.state {
-			case "select_distro":
-				if m.distro == "kali" {
-					m.distro = "blackarch"
-				} else {
-					m.distro = "kali"
-				}
-				m.actionList.Title = fmt.Sprintf("BPH Actions (%s)", m.distro)
-				m.state = "main"
-			case "main":
-				selected := m.actionList.SelectedItem().(item).title
-				switch selected {
-				case "Init Container":
-					m.state = "progress"
-					cmds = append(cmds, m.initContainer())
-				case "Enter Container":
-					m.output = execDistrobox([]string{"enter", containerName(m.distro)})
-				case "Run Tool":
-					m.state = "select_tool"
-					m.toolList.Title = "Select Tool to Run"
-				case "View Docs":
-					m.state = "select_tool"
-					m.toolList.Title = "Select Tool for Docs"
-				case "Guided Labs":
-					m.state = "guided_lab"
-					m.currentStep = 0
-				case "Help":
-					m.output = helpText()
-					m.viewport.SetContent(m.output)
-				case "Quit":
+		case tea.KeyMsg:
+			switch msg.String() {
+				case "ctrl+c", "q":
 					m.quitting = true
 					return m, tea.Quit
-				}
-			case "select_tool":
-				m.selectedTool = m.toolList.SelectedItem().(item).title
-				if strings.Contains(m.toolList.Title, "Run") {
-					// Run and parse via Odin backend
-					rawOutput := execDistrobox([]string{"enter", containerName(m.distro), "--", m.selectedTool}) // Simplified, add args
-					m.output = execBph([]string{"parse", m.selectedTool, rawOutput})
-				} else {
-					for _, t := range toolDocs {
-						if t.name == m.selectedTool {
-							m.output = fmt.Sprintf("%s: %s\nExample: %s", t.name, t.desc, t.example)
-							m.viewport.SetContent(m.output)
-							break
-						}
+				case "enter":
+					switch m.state {
+						case "select_distro":
+							if m.distro == "kali" {
+								m.distro = "blackarch"
+							} else {
+								m.distro = "kali"
+							}
+							m.actionList.Title = fmt.Sprintf("BPH Actions (%s)", m.distro)
+							m.state = "main"
+						case "main":
+							selected := m.actionList.SelectedItem().(item).title
+							switch selected {
+								case "Init Container":
+									m.state = "progress"
+									m.progress.SetPercent(0)
+									cmds = append(cmds, m.initContainer(), animationTickCmd())
+								case "Enter Container":
+									m.output = execDistrobox([]string{"enter", containerName(m.distro)})
+								case "Run Tool":
+									m.state = "select_tool"
+									m.toolList.Title = "Select Tool to Run"
+								case "View Docs":
+									m.state = "select_tool"
+									m.toolList.Title = "Select Tool for Docs"
+								case "Guided Labs":
+									m.state = "guided_lab"
+									m.currentStep = 0
+								case "Help":
+									m.output = helpText()
+									m.viewport.SetContent(m.output)
+								case "Quit":
+									m.quitting = true
+									return m, tea.Quit
+							}
+								case "select_tool":
+									m.selectedTool = m.toolList.SelectedItem().(item).title
+									if strings.Contains(m.toolList.Title, "Run") {
+										// Run and parse via Odin backend
+										rawOutput := execDistrobox([]string{"enter", containerName(m.distro), "--", m.selectedTool}) // Simplified, add args
+										m.output = execBph([]string{"parse", m.selectedTool, rawOutput})
+									} else {
+										for _, t := range toolDocs {
+											if t.name == m.selectedTool {
+												m.output = fmt.Sprintf("%s: %s\nExample: %s", t.name, t.desc, t.example)
+												m.viewport.SetContent(m.output)
+												break
+											}
+										}
+									}
+									m.state = "main"
+								case "guided_lab":
+									if m.selectedLab == 0 { // Select lab first
+										m.selectedLab = m.scenarioList.Index()
+										m.output = fmt.Sprintf("Starting Lab: %s\nStep 1: %s", scenarios[m.selectedLab].name, scenarios[m.selectedLab].steps[0])
+										// Integrate checklist
+										if strings.Contains(m.output, "checklist") {
+											m.output += "\n" + execBph([]string{"checklist", "nmap"}) // Example
+										}
+									} else {
+										m.currentStep++
+										if m.currentStep < len(scenarios[m.selectedLab].steps) {
+											m.output += fmt.Sprintf("\nStep %d: %s", m.currentStep+1, scenarios[m.selectedLab].steps[m.currentStep])
+										} else {
+											m.output += "\nLab Complete! Review ethics."
+											m.state = "main"
+										}
+									}
+									m.viewport.SetContent(m.output)
 					}
-				}
-				m.state = "main"
-			case "guided_lab":
-				if m.selectedLab == 0 { // Select lab first
-					m.selectedLab = m.scenarioList.Cursor()
-					m.output = fmt.Sprintf("Starting Lab: %s\nStep 1: %s", scenarios[m.selectedLab].name, scenarios[m.selectedLab].steps[0])
-					// Integrate checklist
-					if strings.Contains(m.output, "checklist") {
-						m.output += "\n" + execBph([]string{"checklist", "nmap"}) // Example
-					}
-				} else {
-					m.currentStep++
-					if m.currentStep < len(scenarios[m.selectedLab].steps) {
-						m.output += fmt.Sprintf("\nStep %d: %s", m.currentStep+1, scenarios[m.selectedLab].steps[m.currentStep])
-					} else {
-						m.output += "\nLab Complete! Review ethics."
-						m.state = "main"
-					}
-				}
-				m.viewport.SetContent(m.output)
+					return m, tea.Batch(cmds...)
 			}
-			return m, tea.Batch(cmds...)
-		}
-	case tea.WindowSizeMsg:
-		h, v := style.GetFrameSize()
-		m.actionList.SetSize(msg.Width-h, msg.Height-v-5) // Space for status
-		m.toolList.SetSize(msg.Width-h, msg.Height-v-5)
-		m.scenarioList.SetSize(msg.Width-h, msg.Height-v-5)
-		m.viewport.Width = msg.Width - h
-		m.viewport.Height = msg.Height - v - 5
-		m.progress.Width = msg.Width - h
-	case statusTickMsg:
-		m.status = getContainerStatus(m.distro)
-		cmds = append(cmds, statusTickCmd())
-	case progress.FrameMsg:
-		newProgModel, cmd := m.progress.Update(msg)
-		if newProgModel, ok := newProgModel.(progress.Model); ok {
-			m.progress = newProgModel
-		}
-		cmds = append(cmds, cmd)
+								case tea.WindowSizeMsg:
+									h, v := style.GetFrameSize()
+									m.actionList.SetSize(msg.Width-h, msg.Height-v-5) // Space for status
+									m.toolList.SetSize(msg.Width-h, msg.Height-v-5)
+									m.scenarioList.SetSize(msg.Width-h, msg.Height-v-5)
+									m.viewport.Width = msg.Width - h
+									m.viewport.Height = msg.Height - v - 5
+									m.progress.Width = msg.Width - h
+								case statusTickMsg:
+									m.status = getContainerStatus(m.distro)
+									cmds = append(cmds, statusTickCmd())
+								case progressTickMsg:
+									perc := m.progress.Percent()
+									if perc >= 1.0 {
+										output := execDistrobox([]string{"create", "--name", containerName(m.distro), "--image", distroImages[m.distro]})
+										m.output = output
+										m.state = "main"
+										return m, nil
+									}
+									_ = m.progress.SetPercent(perc + 0.1)
+									cmds = append(cmds, progressTickCmd())
+								case animationMsg:
+									if m.state != "progress" {
+										return m, nil
+									}
+									pm, cmd := m.progress.Update(msg)
+									if p, ok := pm.(progress.Model); ok {
+										m.progress = p
+									}
+									cmds = append(cmds, cmd, animationTickCmd())
 	}
-
 	var cmd tea.Cmd
 	switch m.state {
-	case "main":
-		m.actionList, cmd = m.actionList.Update(msg)
-	case "select_tool":
-		m.toolList, cmd = m.toolList.Update(msg)
-	case "guided_lab":
-		m.scenarioList, cmd = m.scenarioList.Update(msg)
-	case "view_doc", "run_tool":
-		m.viewport, cmd = m.viewport.Update(msg)
+		case "main":
+			m.actionList, cmd = m.actionList.Update(msg)
+		case "select_tool":
+			m.toolList, cmd = m.toolList.Update(msg)
+		case "guided_lab":
+			m.scenarioList, cmd = m.scenarioList.Update(msg)
+		case "view_doc", "run_tool":
+			m.viewport, cmd = m.viewport.Update(msg)
 	}
 	cmds = append(cmds, cmd)
-
 	return m, tea.Batch(cmds...)
 }
 
@@ -241,23 +249,21 @@ func (m model) View() string {
 		return "Goodbye! Learn ethically.\n"
 	}
 	statusPanel := statusStyle.Render(m.status)
-
 	base := ""
 	switch m.state {
-	case "select_distro":
-		base = "Press Enter to toggle distro: " + m.distro
-	case "main":
-		base = m.actionList.View()
-	case "select_tool":
-		base = m.toolList.View()
-	case "guided_lab":
-		base = m.scenarioList.View()
-	case "view_doc", "run_tool":
-		base = m.viewport.View()
-	case "progress":
-		base = m.progress.View() + "\nInitializing container..."
+		case "select_distro":
+			base = "Press Enter to toggle distro: " + m.distro
+		case "main":
+			base = m.actionList.View()
+		case "select_tool":
+			base = m.toolList.View()
+		case "guided_lab":
+			base = m.scenarioList.View()
+		case "view_doc", "run_tool":
+			base = m.viewport.View()
+		case "progress":
+			base = m.progress.View() + "\nInitializing container..."
 	}
-
 	return statusPanel + "\n" + style.Render(base) + "\n\nOutput:\n" + m.output
 }
 
@@ -309,26 +315,28 @@ func statusTickCmd() tea.Cmd {
 	})
 }
 
+func progressTickCmd() tea.Cmd {
+	return tea.Tick(200*time.Millisecond, func(_ time.Time) tea.Msg {
+		return progressTickMsg{}
+	})
+}
+
+func animationTickCmd() tea.Cmd {
+	return tea.Tick(50*time.Millisecond, func(_ time.Time) tea.Msg {
+		return animationMsg(progress.FrameMsg{})
+	})
+}
+
 func (m *model) initContainer() tea.Cmd {
-	return func() tea.Msg {
-		// Simulate progress
-		for i := 0.0; i <= 1.0; i += 0.1 {
-			m.progress.SetPercent(i)
-			time.Sleep(200 * time.Millisecond)
-		}
-		output := execDistrobox([]string{"create", "--name", containerName(m.distro), "--image", distroImages[m.distro]})
-		m.output = output
-		m.state = "main"
-		return nil
-	}
+	return progressTickCmd()
 }
 
 func helpText() string {
 	return `BPH TUI - Educational for Pentesting
-Select actions with arrows, enter to confirm.
-Distro: kali or blackarch.
-Guided Labs: Step-by-step learning.
-Learn safely!`
+	Select actions with arrows, enter to confirm.
+	Distro: kali or blackarch.
+	Guided Labs: Step-by-step learning.
+	Learn safely!`
 }
 
 type item struct {
@@ -343,7 +351,6 @@ func main() {
 	home, _ := os.UserHomeDir()
 	logDir := home + "/.hackeros/bph"
 	os.MkdirAll(logDir, 0755)
-
 	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Println("Error running program:", err)
