@@ -1,0 +1,10 @@
+// golang
+// odin
+
+> cd source-code
+> cd backend-cli
+> odin build
+> cd ..
+> cd containers-tui
+> go get containers-tui
+> go build
