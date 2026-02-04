@@ -1,1 +1,8 @@
+[package]
+name = "own-tools"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+pyo3 = { version = "0.20.0", features = ["auto-initialize"] }
 
