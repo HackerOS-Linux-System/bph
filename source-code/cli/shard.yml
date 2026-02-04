@@ -1,1 +1,9 @@
+name: bph
+version: 0.2
 
+authors:
+  - HackerOS Team <hackeros068@gmail.com>
+
+crystal: 1.0.0
+
+license: MIT
