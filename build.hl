@@ -1,10 +1,15 @@
 // golang
 // odin
+// crystal
 
 > cd source-code
-> cd backend-cli
-> odin build
+> cd backend
+> odin build main.odin -file -extra-linker-flags:"-static -lm -ldl" -o:speed
 > cd ..
-> cd containers-tui
-> go get containers-tui
+> cd tui
+> go get bph-tui
 > go build
+> cd ..
+> cd cli
+> crystal build src/main.cr --release
+> sudo mv main bph
