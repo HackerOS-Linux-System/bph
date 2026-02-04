@@ -1,4 +1,3 @@
-// bph-tui
 package main
 
 import (
@@ -34,8 +33,8 @@ var (
 		"kali":      "docker.io/kalilinux/kali-rolling:latest",
 		"blackarch": "docker.io/blackarch/blackarch:latest",
 	}
-	dvwaImage    = "vulner/web-dvwa:latest"
-	toolDocs     = []toolDoc{
+	dvwaImage   = "vulner/web-dvwa:latest"
+	toolDocs    = []toolDoc{
 		{"nmap", "Network scanner for discovering hosts and services.", "nmap -sV target_ip"},
 		{"metasploit", "Framework for exploiting vulnerabilities.", "msfconsole"},
 		{"wireshark", "Packet analyzer for network traffic.", "wireshark"},
@@ -60,8 +59,8 @@ var (
 	BorderStyle(lipgloss.NormalBorder()).
 	BorderBottom(true).
 	BorderForeground(lipgloss.Color("240"))
-	warnTools = []string{"hydra", "sqlmap", "nikto"}
-	quizzes   = map[string]struct {
+	warnTools   = []string{"hydra", "sqlmap", "nikto"}
+	quizzes     = map[string]struct {
 		q string
 		a string
 	}{
@@ -79,22 +78,22 @@ func init() {
 }
 
 type model struct {
-	distro           string
-	actionList       list.Model
-	toolList         list.Model
-	scenarioList     list.Model
-	viewport         viewport.Model
-	progress         progress.Model
-	textinput        textinput.Model
-	state            string // "select_distro", "main", "select_tool", "view_doc", "run_tool", "guided_lab", "progress", "confirm_warning", "input_snapshot_file", "view_output"
-	substate         string // for snapshot: "save", "restore"
-	selectedTool     string
-	selectedLab      int
-	currentStep      int
-	output           string
-	status           string
-	labStatus        string
-	quitting         bool
+	distro       string
+	actionList   list.Model
+	toolList     list.Model
+	scenarioList list.Model
+	viewport     viewport.Model
+	progress     progress.Model
+	textinput    textinput.Model
+	state        string // "select_distro", "main", "select_tool", "view_doc", "run_tool", "guided_lab", "progress", "confirm_warning", "input_snapshot_file", "view_output"
+	substate     string // for snapshot: "save", "restore"
+	selectedTool string
+	selectedLab  int
+	currentStep  int
+	output       string
+	status       string
+	labStatus    string
+	quitting     bool
 }
 
 type statusTickMsg time.Time
@@ -213,7 +212,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								case "select_tool":
 									m.selectedTool = m.toolList.SelectedItem().(item).title
 									if strings.Contains(m.toolList.Title, "Run") {
-										if slice.contains(warnTools, m.selectedTool) {
+										if contains(warnTools, m.selectedTool) {
 											m.state = "confirm_warning"
 										} else {
 											m.runTool()
@@ -414,8 +413,8 @@ func (m model) formatParsedOutput(data map[string]interface{}) string {
 			sb := strings.Builder{}
 			fmt.Fprintln(&sb, "BSSID\tESSID\tPower")
 			for _, n := range nets {
-				nmap := n.(map[string]interface{})
-				fmt.Fprintf(&sb, "%s\t%s\t%s\n", nmap["bssid"], nmap["essid"], nmap["power"])
+				nmod := n.(map[string]interface{})
+				fmt.Fprintf(&sb, "%s\t%s\t%s\n", nmod["bssid"], nmod["essid"], nmod["power"])
 			}
 			return sb.String()
 	}
@@ -622,6 +621,15 @@ type item struct {
 func (i item) Title() string       { return i.title }
 func (i item) Description() string { return i.desc }
 func (i item) FilterValue() string { return i.title }
+
+func contains(s []string, e string) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
+}
 
 func main() {
 	home, _ := os.UserHomeDir()
