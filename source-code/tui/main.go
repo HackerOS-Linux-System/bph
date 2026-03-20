@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,8 +34,8 @@ var (
 		"kali":      "docker.io/kalilinux/kali-rolling:latest",
 		"blackarch": "docker.io/blackarch/blackarch:latest",
 	}
-	dvwaImage   = "vulner/web-dvwa:latest"
-	toolDocs    = []toolDoc{
+	dvwaImage = "vulner/web-dvwa:latest"
+	toolDocs  = []toolDoc{
 		{"nmap", "Network scanner for discovering hosts and services.", "nmap -sV target_ip"},
 		{"metasploit", "Framework for exploiting vulnerabilities.", "msfconsole"},
 		{"wireshark", "Packet analyzer for network traffic.", "wireshark"},
@@ -45,22 +46,27 @@ var (
 		{"nikto", "Web server scanner.", "nikto -h target.com"},
 		{"sqlmap", "SQL injection exploiter.", "sqlmap -u target_url"},
 		{"maltego", "OSINT visualization tool.", "maltego"},
+		{"own-tools", "Custom pentesting tools suite.", "own-tools <subcommand>"},
 	}
 	scenarios = []scenario{
 		{"Scan Local Network", []string{"Check interfaces (backend checklist nmap)", "Run nmap on 192.168.1.0/24", "Parse results (backend parse nmap <output>)", "Ethics: Only on your network!"}},
      {"Wi-Fi Assessment", []string{"Enable monitor mode (backend checklist aircrack-ng)", "Run airodump-ng", "Analyze captures"}},
      {"Web Vuln Scan", []string{"Start DVWA", "Run nikto -h http://localhost:8080", "Run sqlmap -u http://localhost:8080/vulnerabilities/sqli/?id=1&Submit=Submit", "Review findings"}},
+     {"Custom Tool Practice", []string{"Run own-tools port-scan 127.0.0.1", "Run own-tools vuln-check http://localhost:8080", "Run own-tools pass-gen 12", "Review outputs"}},
 	}
 	style = lipgloss.NewStyle().
 	BorderStyle(lipgloss.NormalBorder()).
-	BorderForeground(lipgloss.Color("240"))
+	BorderForeground(lipgloss.Color("63")) // More colors: blue-ish
 	statusStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("205")).
 	BorderStyle(lipgloss.NormalBorder()).
 	BorderBottom(true).
-	BorderForeground(lipgloss.Color("240"))
-	warnTools   = []string{"hydra", "sqlmap", "nikto"}
-	quizzes     = map[string]struct {
+	BorderForeground(lipgloss.Color("228")) // Yellow-ish
+	warnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")) // Red
+	successStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // Green
+	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")) // Blue
+	warnTools  = []string{"hydra", "sqlmap", "nikto"}
+	quizzes    = map[string]struct {
 		q string
 		a string
 	}{
@@ -70,11 +76,13 @@ var (
 		"sqlmap":      {"What vulnerability does sqlmap exploit?", "sql injection"},
 	}
 	backendPath string
+	ownToolsPath string
 )
 
 func init() {
 	home, _ := os.UserHomeDir()
-	backendPath = filepath.Join(home, ".hackeros", "bph", "backend")
+	backendPath = filepath.Join(home, ".hackeros", "bph", "bph-backend")
+	ownToolsPath = filepath.Join(home, ".hackeros", "bph", "own-tools")
 }
 
 type model struct {
@@ -85,7 +93,7 @@ type model struct {
 	viewport     viewport.Model
 	progress     progress.Model
 	textinput    textinput.Model
-	state        string // "select_distro", "main", "select_tool", "view_doc", "run_tool", "guided_lab", "progress", "confirm_warning", "input_snapshot_file", "view_output"
+	state        string // "select_distro", "main", "select_tool", "view_doc", "run_tool", "guided_lab", "progress", "confirm_warning", "input_snapshot_file", "view_output", "timeline", "quiz"
 	substate     string // for snapshot: "save", "restore"
 	selectedTool string
 	selectedLab  int
@@ -94,6 +102,9 @@ type model struct {
 	status       string
 	labStatus    string
 	quitting     bool
+	score        int // For scoring system
+	timeline     []string
+	dynamicIP    string // For dynamic targets
 }
 
 type statusTickMsg time.Time
@@ -111,6 +122,13 @@ func initialModel() model {
 		item{title: "Start Offline Lab", desc: "Start DVWA for offline practice"},
 		item{title: "Snapshot Save", desc: "Save container snapshot"},
 		item{title: "Snapshot Restore", desc: "Restore container snapshot"},
+		item{title: "View Timeline", desc: "Show chronological timeline of actions"},
+		item{title: "Network Create", desc: "Create isolated network"},
+		item{title: "Gateway Start", desc: "Start Tor/VPN gateway"},
+		item{title: "Clean Logs", desc: "Clean logs in container (anti-forensics)"},
+		item{title: "Detect Sandbox", desc: "Educational sandbox detection"},
+		item{title: "Session New", desc: "Start new detachable session"},
+		item{title: "Session Attach", desc: "Attach to session"},
 		item{title: "Help", desc: "Show help"},
 		item{title: "Quit", desc: "Exit the TUI"},
 	}
@@ -130,7 +148,7 @@ func initialModel() model {
 	scenarioList.Title = "Select Guided Lab"
 	vp := viewport.New(0, 0)
 	vp.Style = style
-	prog := progress.New(progress.WithDefaultGradient())
+	prog := progress.New(progress.WithGradient("#FF7CCB", "#FDFF8C")) // More colorful gradient
 	ti := textinput.New()
 	ti.Prompt = "> "
 	ti.Focus()
@@ -143,6 +161,7 @@ func initialModel() model {
 		textinput:    ti,
 		state:        "select_distro",
 		status:       "Loading status...",
+		score:        0,
 	}
 }
 
@@ -188,6 +207,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 									m.selectedLab = -1
 									m.currentStep = -1
 									m.labStatus = ""
+									m.score = 0
+									m.dynamicIP = m.getDynamicIP() // For dynamic targets
 								case "Start Offline Lab":
 									execPodman([]string{"pull", dvwaImage})
 									output := execPodman([]string{"run", "-d", "-p", "8080:80", "--name", "bph-dvwa", dvwaImage})
@@ -202,6 +223,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 									m.substate = "restore"
 									m.textinput.SetValue("")
 									m.textinput.Placeholder = "Enter file path for snapshot"
+								case "View Timeline":
+									m.state = "timeline"
+									m.loadTimeline()
+								case "Network Create":
+									m.output = execBackend([]string{"network", "create", "isolated-net"})
+								case "Gateway Start":
+									m.output = execBackend([]string{"gateway", "start", "tor"})
+								case "Clean Logs":
+									m.output = execBackend([]string{"clean", m.distro})
+								case "Detect Sandbox":
+									m.output = execBackend([]string{"detect-sandbox"})
+								case "Session New":
+									m.state = "select_tool"
+									m.toolList.Title = "Select Tool for New Session"
+								case "Session Attach":
+									m.state = "select_tool"
+									m.toolList.Title = "Select Session to Attach"
 								case "Help":
 									m.output = helpText()
 									m.viewport.SetContent(m.output)
@@ -214,13 +252,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 									if strings.Contains(m.toolList.Title, "Run") {
 										if contains(warnTools, m.selectedTool) {
 											m.state = "confirm_warning"
+										} else if m.selectedTool == "own-tools" {
+											m.state = "input_own_tools_args"
+											m.textinput.SetValue("")
+											m.textinput.Placeholder = "Enter subcommand and args for own-tools (e.g., port-scan 127.0.0.1)"
 										} else {
 											m.runTool()
 										}
+									} else if strings.Contains(m.toolList.Title, "New Session") {
+										m.output = execBackend([]string{"session", "new", m.distro, m.selectedTool})
+										m.state = "main"
+									} else if strings.Contains(m.toolList.Title, "Attach") {
+										m.output = execBackend([]string{"session", "attach", m.selectedTool})
+										m.state = "main"
 									} else {
 										for _, t := range toolDocs {
 											if t.name == m.selectedTool {
 												m.output = fmt.Sprintf("%s: %s\nExample: %s", t.name, t.desc, t.example)
+												if t.name == "own-tools" {
+													m.output += "\nSubcommands: port-scan <target>, vuln-check <url>, pass-gen <length>, hash-crack <hash>, osint-search <query>"
+												}
 												m.viewport.SetContent(m.output)
 												break
 											}
@@ -240,6 +291,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 										m.advanceLabStep()
 										cmds = append(cmds, checkTickCmd())
 									} else if m.currentStep >= 0 && strings.Contains(m.labStatus, "complete") {
+										m.score += 10 // Add points
 										m.advanceLabStep()
 										cmds = append(cmds, checkTickCmd())
 									}
@@ -247,17 +299,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 									answer := strings.ToLower(m.textinput.Value())
 									correct := strings.ToLower(quizzes[m.selectedTool].a)
 									if strings.Contains(answer, correct) {
-										m.labStatus = "Quiz correct! Proceeding."
+										m.labStatus = successStyle.Render("Quiz correct! Proceeding.")
+										m.score += 5 // Points for quiz
 										m.advanceLabStep()
 									} else {
-										m.labStatus = "Incorrect. Try again."
+										m.labStatus = warnStyle.Render("Incorrect. Try again.")
 									}
 									m.textinput.SetValue("")
 									m.state = "guided_lab"
 								case "input_snapshot_file":
 									file := m.textinput.Value()
 									if file == "" {
-										m.output = "File path required."
+										m.output = warnStyle.Render("File path required.")
 									} else {
 										var args []string
 										if m.substate == "save" {
@@ -268,6 +321,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 										m.output = execBackend(args)
 									}
 									m.state = "main"
+								case "input_own_tools_args":
+									argsStr := m.textinput.Value()
+									if argsStr == "" {
+										m.output = warnStyle.Render("Args required for own-tools.")
+									} else {
+										m.output = execOwnTools(strings.Split(argsStr, " "))
+									}
+									m.viewport.SetContent(m.output)
+									m.state = "view_output"
 					}
 					return m, tea.Batch(cmds...)
 								case "y", "n":
@@ -323,9 +385,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toolList, cmd = m.toolList.Update(msg)
 		case "guided_lab":
 			m.scenarioList, cmd = m.scenarioList.Update(msg)
-		case "view_doc", "view_output":
+		case "view_doc", "view_output", "timeline":
 			m.viewport, cmd = m.viewport.Update(msg)
-		case "quiz", "input_snapshot_file":
+		case "quiz", "input_snapshot_file", "input_own_tools_args":
 			m.textinput, cmd = m.textinput.Update(msg)
 	}
 	cmds = append(cmds, cmd)
@@ -357,12 +419,12 @@ func (m model) formatParsedOutput(data map[string]interface{}) string {
 	if !ok {
 		return "Invalid parsed data"
 	}
+	sb := strings.Builder{}
 	switch typ {
 		case "nmap":
 			hosts, _ := data["hosts"].([]interface{})
 			gateway := m.getDefaultGateway()
-			sb := strings.Builder{}
-			fmt.Fprintf(&sb, "[Gateway %s]\n", gateway)
+			fmt.Fprintf(&sb, titleStyle.Render("[Gateway %s]\n"), gateway)
 			for _, h := range hosts {
 				hmap := h.(map[string]interface{})
 				addr := hmap["addr"].(string)
@@ -381,23 +443,19 @@ func (m model) formatParsedOutput(data map[string]interface{}) string {
 				if portsStr == "" {
 					portsStr = "brak"
 				}
-				fmt.Fprintf(&sb, "├── [%s] (Ports: %s)\n", addr, portsStr)
+				fmt.Fprintf(&sb, successStyle.Render("├── [%s] (Ports: %s)\n"), addr, portsStr)
 			}
-			return sb.String()
 		case "nikto":
 			vulns, _ := data["vulns"].([]interface{})
-			sb := strings.Builder{}
-			fmt.Fprintln(&sb, "Vulnerabilities:")
+			fmt.Fprintln(&sb, titleStyle.Render("Vulnerabilities:"))
 			for _, v := range vulns {
 				vmap := v.(map[string]interface{})
-				fmt.Fprintf(&sb, "OSVDB-%s: %s\n", vmap["id"], vmap["desc"])
+				fmt.Fprintf(&sb, warnStyle.Render("OSVDB-%s: %s\n"), vmap["id"], vmap["desc"])
 			}
-			return sb.String()
 		case "sqlmap":
 			dbs, _ := data["databases"].([]interface{})
 			tables, _ := data["tables"].(map[string]interface{})
-			sb := strings.Builder{}
-			fmt.Fprintln(&sb, "Databases:")
+			fmt.Fprintln(&sb, titleStyle.Render("Databases:"))
 			for _, db := range dbs {
 				fmt.Fprintln(&sb, db.(string))
 			}
@@ -407,18 +465,19 @@ func (m model) formatParsedOutput(data map[string]interface{}) string {
 					fmt.Fprintln(&sb, t.(string))
 				}
 			}
-			return sb.String()
 		case "aircrack":
 			nets, _ := data["networks"].([]interface{})
-			sb := strings.Builder{}
-			fmt.Fprintln(&sb, "BSSID\tESSID\tPower")
+			fmt.Fprintln(&sb, titleStyle.Render("BSSID\tESSID\tPower"))
 			for _, n := range nets {
 				nmod := n.(map[string]interface{})
 				fmt.Fprintf(&sb, "%s\t%s\t%s\n", nmod["bssid"], nmod["essid"], nmod["power"])
 			}
-			return sb.String()
 	}
-	return "Unsupported format"
+	// Add workflow suggestions if present
+	if suggestions, ok := data["suggestions"].(string); ok {
+		fmt.Fprintf(&sb, "\n%s\n", suggestions)
+	}
+	return sb.String()
 }
 
 func (m model) getDefaultGateway() string {
@@ -438,6 +497,7 @@ func (m *model) advanceLabStep() {
 	m.currentStep++
 	if m.currentStep < len(scenarios[m.selectedLab].steps) {
 		step := scenarios[m.selectedLab].steps[m.currentStep]
+		step = strings.Replace(step, "localhost:8080", m.dynamicIP, -1) // Dynamic target
 		m.output = fmt.Sprintf("Lab: %s\nStep %d: %s", scenarios[m.selectedLab].name, m.currentStep+1, step)
 		if strings.Contains(step, "backend checklist") {
 			tool := strings.Split(step, " ")[2]
@@ -456,6 +516,7 @@ func (m *model) advanceLabStep() {
 		m.labStatus = "Perform the step..."
 	} else {
 		m.output += "\nLab Complete! Review ethics."
+		m.output += fmt.Sprintf("\nYour score: %d", m.score)
 		m.state = "main"
 	}
 	m.viewport.SetContent(m.output + "\n" + m.labStatus)
@@ -476,53 +537,92 @@ func (m *model) checkLabProgress() {
 				}
 			}
 			if complete {
-				m.labStatus = "Nmap scan detected - step complete!"
+				m.labStatus = successStyle.Render("Nmap scan detected - step complete!")
 			} else {
 				m.labStatus = "Run nmap on 192.168.1.0/24 and log results."
 			}
 		case m.selectedLab == 1 && m.currentStep == 0: // Wi-Fi Assessment, Enable monitor mode
 			cmd := exec.Command("ip", "link", "show", "dev", "wlan0mon")
 			if cmd.Run() == nil {
-				m.labStatus = "Monitor mode enabled - step complete!"
+				m.labStatus = successStyle.Render("Monitor mode enabled - step complete!")
 			} else {
 				m.labStatus = "Monitor mode not enabled yet."
 			}
 		case m.selectedLab == 2 && m.currentStep == 2: // Web Vuln Scan, Run sqlmap
-			// Check inside container for dump files
 			checkCmd := execDistrobox([]string{"enter", containerName(m.distro), "--", "ls", "/root/sqlmap/output"})
 			if strings.Contains(checkCmd, ".csv") || strings.Contains(checkCmd, ".txt") {
-				m.labStatus = "SQL dump detected - step complete!"
+				m.labStatus = successStyle.Render("SQL dump detected - step complete!")
 			} else {
 				m.labStatus = "Run sqlmap and dump data."
 			}
+		case m.selectedLab == 3 && m.currentStep == 0: // Custom Tool Practice, Run own-tools port-scan
+			files, _ := filepath.Glob(filepath.Join(logDir, "*_own-tools.log"))
+			complete := false
+			for _, f := range files {
+				content, _ := os.ReadFile(f)
+				if strings.Contains(string(content), "Port") {
+					complete = true
+					break
+				}
+			}
+			if complete {
+				m.labStatus = successStyle.Render("Own-tools port scan detected - step complete!")
+			} else {
+				m.labStatus = "Run own-tools port-scan and log results."
+			}
 	}
 	m.viewport.SetContent(m.output + "\n" + m.labStatus)
+}
+
+func (m *model) loadTimeline() {
+	home, _ := os.UserHomeDir()
+	logDir := filepath.Join(home, ".hackeros", "bph", "logs")
+	files, _ := os.ReadDir(logDir)
+	m.timeline = []string{}
+	for _, file := range files {
+		if !file.IsDir() {
+			m.timeline = append(m.timeline, file.Name())
+		}
+	}
+	sort.Strings(m.timeline)
+	sb := strings.Builder{}
+	for _, t := range m.timeline {
+		fmt.Fprintf(&sb, "%s\n", t)
+	}
+	m.viewport.SetContent(sb.String())
+}
+
+func (m model) getDynamicIP() string {
+	output := execPodman([]string{"inspect", "bph-dvwa", "--format", "{{.NetworkSettings.IPAddress}}"})
+	return strings.TrimSpace(output)
 }
 
 func (m model) View() string {
 	if m.quitting {
 		return "Goodbye! Learn ethically.\n"
 	}
-	statusPanel := statusStyle.Render(m.status)
+	statusPanel := statusStyle.Render(fmt.Sprintf("%s | Score: %d", m.status, m.score))
 	base := ""
 	switch m.state {
 		case "select_distro":
-			base = "Press Enter to toggle distro: " + m.distro
+			base = titleStyle.Render("Press Enter to toggle distro: ") + m.distro
 		case "main":
 			base = m.actionList.View()
 		case "select_tool":
 			base = m.toolList.View()
 		case "guided_lab":
 			base = m.scenarioList.View() + "\n" + m.viewport.View()
-		case "view_doc", "view_output":
+		case "view_doc", "view_output", "timeline":
 			base = m.viewport.View()
 		case "progress":
 			base = m.progress.View() + "\nInitializing container..."
 		case "confirm_warning":
-			base = "Warning: Do you have written permission to test this target? (y/n)"
+			base = warnStyle.Render("Warning: Do you have written permission to test this target? (y/n)")
 		case "quiz":
 			base = m.labStatus + "\n" + m.textinput.View()
 		case "input_snapshot_file":
+			base = m.textinput.Placeholder + "\n" + m.textinput.View()
+		case "input_own_tools_args":
 			base = m.textinput.Placeholder + "\n" + m.textinput.View()
 	}
 	return statusPanel + "\n" + style.Render(base) + "\n\nOutput:\n" + m.output
@@ -556,6 +656,16 @@ func execBackend(args []string) string {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Sprintf("Backend error: %v\n%s", err, output)
+	}
+	return string(output)
+}
+
+func execOwnTools(args []string) string {
+	fullArgs := append([]string{ownToolsPath}, args...)
+	cmd := exec.Command(fullArgs[0], fullArgs[1:]...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Sprintf("Own-tools error: %v\n%s", err, output)
 	}
 	return string(output)
 }
@@ -611,6 +721,11 @@ func helpText() string {
 	Guided Labs: Step-by-step learning with validation and quizzes.
 	Offline Lab: Practice on local DVWA.
 	Snapshots: Save/restore container state.
+	Timeline: View action history.
+	Network: Isolated networks for safe practice.
+	Gateway: Tor/VPN for anonymity.
+	Sessions: Detachable tool runs.
+	Own-tools: Custom suite with port-scan, vuln-check, pass-gen, hash-crack, osint-search.
 	Learn safely!`
 }
 
